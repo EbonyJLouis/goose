@@ -348,9 +348,9 @@ fn create_tool_function(full_tool_name: String) -> NativeFunction {
             rx.blocking_recv()
                 .map_err(|e| e.to_string())
                 .and_then(|r| r)
-                .and_then(|result| {
+                .map(|result| {
                     // Extract text content from CallToolResult for JS return value
-                    let text_result = if let Some(sc) = &result.structured_content {
+                    if let Some(sc) = &result.structured_content {
                         serde_json::to_string(sc).unwrap_or_default()
                     } else {
                         result
@@ -362,8 +362,7 @@ fn create_tool_function(full_tool_name: String) -> NativeFunction {
                             })
                             .collect::<Vec<_>>()
                             .join("\n")
-                    };
-                    Ok(text_result)
+                    }
                 })
                 .map(|result| parse_result_to_js(&result, ctx))
                 .map_err(|e| JsNativeError::error().with_message(e).into())
@@ -510,7 +509,7 @@ impl CodeExecutionClient {
         let (call_tx, call_rx) = mpsc::unbounded_channel();
         let collected_results = Arc::new(Mutex::new(Vec::new()));
         let collected_results_clone = Arc::clone(&collected_results);
-        
+
         let tool_handler = tokio::spawn(Self::run_tool_handler(
             session_id.to_string(),
             call_rx,
@@ -523,22 +522,28 @@ impl CodeExecutionClient {
             .map_err(|e| format!("JS execution task failed: {e}"))?;
 
         tool_handler.abort();
-        
+
         js_result.map(|r| {
             let mut contents = vec![Content::text(format!("Result: {r}"))];
-            
+
             if let Ok(results) = collected_results.lock() {
                 for result in results.iter() {
                     for content in &result.content {
                         if let RawContent::Resource(resource) = &content.raw {
-                            if content.audience().map_or(true, |aud| aud.contains(&Role::User)) {
-                                contents.push(Content::resource(resource.resource.clone()).with_audience(vec![Role::User]));
+                            if content
+                                .audience()
+                                .is_none_or(|aud| aud.contains(&Role::User))
+                            {
+                                contents.push(
+                                    Content::resource(resource.resource.clone())
+                                        .with_audience(vec![Role::User]),
+                                );
                             }
                         }
                     }
                 }
             }
-            
+
             contents
         })
     }
